@@ -1,4 +1,4 @@
-module github.com/Root-lee/gluawebsocket
+module github.com/Root-lee/gluaredis
 
 go 1.20
 
