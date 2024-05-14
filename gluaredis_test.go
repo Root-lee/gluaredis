@@ -2,10 +2,10 @@ package gluaredis
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/agiledragon/gomonkey/v2"
 	"github.com/redis/go-redis/v9"
@@ -26,17 +26,12 @@ func TestNewClient(t *testing.T) {
 }
 
 func TestSetSuccess(t *testing.T) {
-	gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Set", func(_ *redis.Client, ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(nil)
+		return nil
+	})
+	defer p.Reset()
 
-		resp := redis.NewStatusCmd(ctx)
-		return resp
-	})
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password set
-		DB:       0,  // use default DB
-	})
-	rdb.Set(context.Background(), "key", "value", 0)
 	if err := evalLua(t, `
         local redis = require("redis")
         
@@ -44,11 +39,235 @@ func TestSetSuccess(t *testing.T) {
         
         
         local err = rdb:set("key", "value", 0)
-        if err then
-            print("set error: ", err)
-            return
-        end
         assert_equal(err, nil)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestSetFail(t *testing.T) {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(errors.New("test"))
+		return nil
+	})
+	defer p.Reset()
+
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local err = rdb:set("key", "value", 0)
+        assert_not_equal(err, nil)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestSetNxSuccess(t *testing.T) {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(nil)
+		bcmd, _ := cmd.(*redis.BoolCmd)
+		bcmd.SetVal(true)
+		return nil
+	})
+	defer p.Reset()
+
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local ok, err = rdb:setnx("key", "value", 0)
+        assert_equal(err, nil)
+        assert_equal(ok, true)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestSetNxFail(t *testing.T) {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(nil)
+		bcmd, _ := cmd.(*redis.BoolCmd)
+		bcmd.SetVal(false)
+		return nil
+	})
+	defer p.Reset()
+
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local ok, err = rdb:setnx("key", "value", 0)
+        assert_equal(err, nil)
+        assert_equal(ok, false)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestGetSuccess(t *testing.T) {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(nil)
+		scmd, _ := cmd.(*redis.StringCmd)
+		scmd.SetVal("value")
+		return nil
+	})
+	defer p.Reset()
+
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local val, exist, err = rdb:get("key")
+        assert_equal(val, "value")
+        assert_equal(exist, true)
+        assert_equal(err, nil)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestGetNotExist(t *testing.T) {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(redis.Nil)
+		return nil
+	})
+	defer p.Reset()
+
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local val, exist, err = rdb:get("key")
+        assert_equal(val, "")
+        assert_equal(exist, false)
+        assert_equal(err, nil)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestGetFail(t *testing.T) {
+	gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(errors.New("test"))
+		return nil
+	})
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local val, exist, err = rdb:get("key")
+        assert_equal(val, "")
+        assert_equal(exist, false)
+        assert_not_equal(err, nil)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestDelSuccess(t *testing.T) {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(nil)
+		return nil
+	})
+	defer p.Reset()
+
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local err = rdb:del("key")
+        assert_equal(err, nil)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestDelFail(t *testing.T) {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(errors.New("test"))
+		return nil
+	})
+	defer p.Reset()
+
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local err = rdb:del("key")
+        assert_not_equal(err, nil)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestExpireSuccess(t *testing.T) {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(nil)
+		bcmd, _ := cmd.(*redis.BoolCmd)
+		bcmd.SetVal(true)
+		return nil
+	})
+	defer p.Reset()
+
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local ok, err = rdb:expire("key", 0)
+        assert_equal(err, nil)
+        assert_equal(ok, true)
+
+        `); err != nil {
+		t.Errorf("Failed to evaluate script: %s", err.Error())
+	}
+}
+
+func TestExpireFail(t *testing.T) {
+	p := gomonkey.ApplyMethod(reflect.TypeOf(&redis.Client{}), "Process", func(_ *redis.Client, ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(nil)
+		bcmd, _ := cmd.(*redis.BoolCmd)
+		bcmd.SetVal(false)
+		return nil
+	})
+	defer p.Reset()
+
+	if err := evalLua(t, `
+        local redis = require("redis")
+        
+        local rdb = redis.new_client("localhost:6379", "")
+        
+        
+        local ok, err = rdb:expire("key", 0)
+        assert_equal(err, nil)
+        assert_equal(ok, false)
 
         `); err != nil {
 		t.Errorf("Failed to evaluate script: %s", err.Error())
